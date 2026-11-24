@@ -598,11 +598,39 @@ static const struct of_device_id mtk_musb_match[] = {
 MODULE_DEVICE_TABLE(of, mtk_musb_match);
 #endif
 
+/*
+ * TCL 30 SE: the u2 PHY loses its state across system suspend (s2idle), so after resume the hub reset fails and musb drops
+ * to B-device. Redo the boot-time PHY bring-up on resume (this glue is the parent of musb-hdrc, so it resumes first).
+ */
+static bool resume_phy_reinit = true;
+module_param(resume_phy_reinit, bool, 0644);
+MODULE_PARM_DESC(resume_phy_reinit, "re-initialise the USB PHY on system resume");
+
+static int __maybe_unused mtk_musb_resume(struct device *dev)
+{
+	struct mtk_glue *glue = dev_get_drvdata(dev);
+
+	if (!resume_phy_reinit || !glue || glue->role == USB_ROLE_NONE)
+		return 0;
+	phy_power_off(glue->phy);
+	phy_exit(glue->phy);
+	phy_init(glue->phy);
+	phy_power_on(glue->phy);
+	phy_set_mode(glue->phy, glue->phy_mode);
+	dev_info(dev, "resume: PHY re-initialised (role %d)\n", glue->role);
+	return 0;
+}
+
+static const struct dev_pm_ops mtk_musb_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(NULL, mtk_musb_resume)
+};
+
 static struct platform_driver mtk_musb_driver = {
 	.probe = mtk_musb_probe,
 	.remove = mtk_musb_remove,
 	.driver = {
 		   .name = "musb-mtk",
+		   .pm = &mtk_musb_pm_ops,
 		   .of_match_table = of_match_ptr(mtk_musb_match),
 	},
 };

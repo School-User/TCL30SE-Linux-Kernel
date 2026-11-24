@@ -50,6 +50,9 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6765[] = {
 		.pwr_sta2nd_offs = MT6765_PWR_STATUS_2ND,
 		.sram_pdn_bits = GENMASK(8, 8),
 		.sram_pdn_ack_bits = GENMASK(12, 12),
+		/* TCL 30 SE: the panel runs on the bootloader-configured pipeline via simpledrm, which cannot reprogram it;
+		 * powering DISP off in system suspend leaves a blank (backlit) screen after resume. */
+		.caps = MTK_SCPD_ALWAYS_ON,
 	},
 	[MT6765_POWER_DOMAIN_MFG] = {
 		.name = "mfg",
