@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/usb/role.h>
 #include <linux/usb/typec.h>
 
 #define WUSB3801_REG_DEVICE_ID		0x01
@@ -90,11 +91,21 @@ struct wusb3801 {
 	struct typec_port	*port;
 	struct regmap		*regmap;
 	struct regulator	*vbus_supply;
+	struct usb_role_switch	*role_sw;
 	unsigned int		partner_type;
 	enum typec_port_type	port_type;
 	enum typec_pwr_opmode	pwr_opmode;
 	bool			vbus_on;
 };
+
+/*
+ * TCL 30 SE: hold_role=1 leaves the USB role and the VBUS boost to userspace (casper-usb-boot). Without it every CC event
+ * (hub unplugged, a powered hub seen as a source) switches the controller to device mode and the boost off, which kills
+ * hot-swapping of docks.
+ */
+static bool hold_role;
+module_param(hold_role, bool, 0644);
+MODULE_PARM_DESC(hold_role, "do not change the USB role or VBUS on CC events (userspace controls them)");
 
 static enum typec_role wusb3801_get_default_role(struct wusb3801 *wusb3801)
 {
@@ -233,7 +244,15 @@ static void wusb3801_hw_update(struct wusb3801 *wusb3801)
 
 	partner_type = status & WUSB3801_STAT_PARTNER;
 
-	if (partner_type == WUSB3801_STAT_PARTNER_SNK) {
+	/* Host only while a sink (an OTG adapter) is attached; otherwise stay a device so a PC can always reach us. */
+	if (wusb3801->role_sw && !hold_role)
+		usb_role_switch_set_role(wusb3801->role_sw,
+					 partner_type == WUSB3801_STAT_PARTNER_SNK ?
+					 USB_ROLE_HOST : USB_ROLE_DEVICE);
+
+	if (hold_role) {
+		/* userspace owns VBUS */
+	} else if (partner_type == WUSB3801_STAT_PARTNER_SNK) {
 		if (!wusb3801->vbus_on) {
 			ret = regulator_enable(wusb3801->vbus_supply);
 			if (ret)
@@ -343,9 +362,16 @@ static int wusb3801_probe(struct i2c_client *client)
 	if (IS_ERR(wusb3801->vbus_supply))
 		return PTR_ERR(wusb3801->vbus_supply);
 
+	/* Optional: a graph link to the USB controller ("usb-role-switch") lets us switch host/device. */
+	wusb3801->role_sw = usb_role_switch_get(dev);
+	if (IS_ERR(wusb3801->role_sw))
+		return dev_err_probe(dev, PTR_ERR(wusb3801->role_sw), "getting role switch\n");
+
 	connector = device_get_named_child_node(dev, "connector");
-	if (!connector)
+	if (!connector) {
+		usb_role_switch_put(wusb3801->role_sw);
 		return -ENODEV;
+	}
 
 	ret = typec_get_fw_cap(&wusb3801->cap, connector);
 	if (ret)
@@ -395,6 +421,7 @@ err_unregister_port:
 	typec_unregister_port(wusb3801->port);
 err_put_connector:
 	fwnode_handle_put(connector);
+	usb_role_switch_put(wusb3801->role_sw);
 
 	return ret;
 }
@@ -411,6 +438,7 @@ static void wusb3801_remove(struct i2c_client *client)
 
 	if (wusb3801->vbus_on)
 		regulator_disable(wusb3801->vbus_supply);
+	usb_role_switch_put(wusb3801->role_sw);
 }
 
 static const struct of_device_id wusb3801_of_match[] = {

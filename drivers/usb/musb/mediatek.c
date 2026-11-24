@@ -8,6 +8,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -63,6 +64,55 @@ static int mtk_musb_clks_get(struct mtk_glue *glue)
 	return devm_clk_bulk_get(dev, MTK_MUSB_CLKS_NUM, glue->clks);
 }
 
+/*
+ * TCL 30 SE: starting a host session while a device (hub) is already attached / real VBUS is already up leaves the controller
+ * as a B-device (DEVCTL 0x99, state a_wait_vrise, no CONNECT irq). host_seq selects experimental start sequences at runtime
+ * (/sys/module/mediatek/parameters/host_seq), 0 = original behaviour:
+ *   1  drop the gadget pull-up (POWER.SOFTCONN) first      2  show the controller "VBUS low" while the session starts
+ *   4  pulse ID high -> low before the session             8  longer settle delays
+ *  16  retry up to 3 times while DEVCTL still says B-device
+ *  32  (any path) power-cycle the PHY before starting the host session, like the host->device path does
+ */
+static int host_seq;
+module_param(host_seq, int, 0644);
+MODULE_PARM_DESC(host_seq, "host session start variant bitmask (see mediatek.c)");
+
+#define MTK_TPHY_SUBMODE_VBUS_LOW	BIT(0)	/* must match drivers/phy/mediatek/phy-mtk-tphy.c */
+
+static void mtk_musb_host_session_start(struct mtk_glue *glue)
+{
+	struct musb *musb = glue->musb;
+	int seq = host_seq, try, tries = (seq & 16) ? 3 : 1;
+	unsigned int settle = (seq & 8) ? 40000 : 5000;
+	u8 devctl;
+
+	for (try = 0; try < tries; try++) {
+		devctl = readb(musb->mregs + MUSB_DEVCTL);
+		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl & ~MUSB_DEVCTL_SESSION);
+		if (seq & 1)
+			musb_writeb(musb->mregs, MUSB_POWER, readb(musb->mregs + MUSB_POWER) & ~MUSB_POWER_SOFTCONN);
+		if (seq & 4) {
+			phy_set_mode(glue->phy, PHY_MODE_USB_DEVICE);
+			usleep_range(settle, settle + 1000);
+		}
+		phy_set_mode_ext(glue->phy, PHY_MODE_USB_HOST, (seq & 2) ? MTK_TPHY_SUBMODE_VBUS_LOW : 0);
+		usleep_range(settle, settle + 1000);
+		devctl = readb(musb->mregs + MUSB_DEVCTL) | MUSB_DEVCTL_SESSION;
+		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
+		if (seq & 2) {
+			usleep_range(settle, settle + 1000);
+			phy_set_mode(glue->phy, PHY_MODE_USB_HOST);	/* VBUS valid again: a clean rising edge */
+		}
+		MUSB_HST_MODE(musb);
+		msleep(20);
+		devctl = readb(musb->mregs + MUSB_DEVCTL);
+		dev_info(glue->dev, "host start seq=%d try=%d: DEVCTL=%02x state=%s\n", seq, try, devctl,
+			 musb_otg_state_string(musb));
+		if (!(devctl & MUSB_DEVCTL_BDEVICE))
+			break;
+	}
+}
+
 static int mtk_otg_switch_set(struct mtk_glue *glue, enum usb_role role)
 {
 	struct musb *musb = glue->musb;
@@ -80,6 +130,23 @@ static int mtk_otg_switch_set(struct mtk_glue *glue, enum usb_role role)
 		if (glue->role == USB_ROLE_NONE)
 			phy_power_on(glue->phy);
 
+		/*
+		 * The controller samples the ID level when a session starts. End the running (device)
+		 * session and force ID low in the PHY first, otherwise DEVCTL keeps saying "B device"
+		 * and host mode never starts.
+		 */
+		if ((host_seq & 32) && glue->role != USB_ROLE_NONE) {
+			phy_power_off(glue->phy);
+			usleep_range(10000, 12000);
+			phy_power_on(glue->phy);
+		}
+		if (host_seq & ~32) {
+			mtk_musb_host_session_start(glue);
+			break;
+		}
+		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl & ~MUSB_DEVCTL_SESSION);
+		phy_set_mode(glue->phy, PHY_MODE_USB_HOST);
+		usleep_range(5000, 6000);
 		devctl |= MUSB_DEVCTL_SESSION;
 		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
 		MUSB_HST_MODE(musb);
@@ -92,6 +159,16 @@ static int mtk_otg_switch_set(struct mtk_glue *glue, enum usb_role role)
 		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
 		if (glue->role == USB_ROLE_NONE)
 			phy_power_on(glue->phy);
+		if (glue->role == USB_ROLE_HOST) {
+			/*
+			 * Coming back from host: put ID high again, then drop and re-assert the PHY's forced
+			 * VBUS-valid so the controller sees a fresh VBUS edge and starts a device session.
+			 */
+			phy_set_mode(glue->phy, PHY_MODE_USB_DEVICE);
+			phy_power_off(glue->phy);
+			usleep_range(10000, 12000);
+			phy_power_on(glue->phy);
+		}
 
 		MUSB_DEV_MODE(musb);
 		break;
