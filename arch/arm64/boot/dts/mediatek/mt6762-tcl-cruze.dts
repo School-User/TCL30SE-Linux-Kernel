@@ -369,7 +369,7 @@
 	bus-width = <8>;
 	cap-mmc-highspeed;
 	mmc-ddr-1_8v;
-	mmc-hs200-1_8v;
+	/* No HS200: data delay is never tuned on mt6765, multi-block reads got CRC errors (-84) and fell back to 1-sector reads. DDR52 measured 0 errors, ~80 MB/s. */
 	cap-mmc-hw-reset;
 	max-frequency = <200000000>;
 	non-removable;
