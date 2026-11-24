@@ -117,6 +117,19 @@
 #define P2C_RG_SESSEND			BIT(4)
 #define P2C_RG_AVALID			BIT(2)
 #define P2C_RG_IDDIG			BIT(1)
+/*
+ * TCL 30 SE (MT6765): with only the bits above the controller never sees VBUS valid in host mode
+ * (musb "VBUS_ERROR in a_wait_vrise"). The working PHY state is DTM1 = 0x3f2f (device) / 0x3f2d (host);
+ * the bootloader leaves these extra bits set but they do not survive every boot path, so set them here.
+ */
+#define P2C_MT6765_USB_EXTRA		(BIT(0) | BIT(3) | GENMASK(13, 8))
+
+/*
+ * submode for PHY_MODE_USB_HOST (shared with drivers/usb/musb/mediatek.c): present "no VBUS" (session end, not valid) to the
+ * controller, so a host session can be started with a clean VBUS rising edge even when an attached device/charger already
+ * holds real VBUS up.
+ */
+#define MTK_TPHY_SUBMODE_VBUS_LOW	BIT(0)
 
 #define U3P_U2PHYBC12C		0x080
 #define P2C_RG_CHGDT_EN		BIT(0)
@@ -927,7 +940,7 @@ static void u2_phy_instance_exit(struct mtk_tphy *tphy,
 
 static void u2_phy_instance_set_mode(struct mtk_tphy *tphy,
 				     struct mtk_phy_instance *instance,
-				     enum phy_mode mode)
+				     enum phy_mode mode, int submode)
 {
 	struct u2phy_banks *u2_banks = &instance->u2_banks;
 	u32 tmp;
@@ -935,11 +948,19 @@ static void u2_phy_instance_set_mode(struct mtk_tphy *tphy,
 	tmp = readl(u2_banks->com + U3P_U2PHYDTM1);
 	switch (mode) {
 	case PHY_MODE_USB_DEVICE:
-		tmp |= P2C_FORCE_IDDIG | P2C_RG_IDDIG;
+		tmp |= P2C_FORCE_IDDIG | P2C_RG_IDDIG | P2C_MT6765_USB_EXTRA | P2C_RG_VBUSVALID | P2C_RG_AVALID;
+		tmp &= ~P2C_RG_SESSEND;
 		break;
 	case PHY_MODE_USB_HOST:
-		tmp |= P2C_FORCE_IDDIG;
+		tmp |= P2C_FORCE_IDDIG | P2C_MT6765_USB_EXTRA;
 		tmp &= ~P2C_RG_IDDIG;
+		if (submode & MTK_TPHY_SUBMODE_VBUS_LOW) {
+			tmp &= ~(P2C_RG_VBUSVALID | P2C_RG_AVALID);
+			tmp |= P2C_RG_SESSEND;
+		} else {
+			tmp |= P2C_RG_VBUSVALID | P2C_RG_AVALID;
+			tmp &= ~P2C_RG_SESSEND;
+		}
 		break;
 	case PHY_MODE_USB_OTG:
 		tmp &= ~(P2C_FORCE_IDDIG | P2C_RG_IDDIG);
@@ -1447,7 +1468,7 @@ static int mtk_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
 	if (instance->type == PHY_TYPE_USB2)
-		u2_phy_instance_set_mode(tphy, instance, mode);
+		u2_phy_instance_set_mode(tphy, instance, mode, submode);
 
 	return 0;
 }

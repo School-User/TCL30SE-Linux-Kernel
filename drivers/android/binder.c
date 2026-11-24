@@ -3352,6 +3352,12 @@ static void binder_transaction(struct binder_proc *proc,
 
 		security_cred_getsecid(proc->cred, &secid);
 		ret = security_secid_to_secctx(secid, &lsmctx);
+		if (ret == -EOPNOTSUPP) {
+			/* casper: no LSM on this phone; Android userspace still asks for a context, give it a fixed one. */
+			lsmctx.context = (char *)"u:r:su:s0";
+			lsmctx.len = 10;
+			ret = 0;
+		}
 		if (ret < 0) {
 			binder_txn_error("%d:%d failed to get security context\n",
 				thread->pid, proc->pid);

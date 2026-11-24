@@ -1,0 +1,688 @@
+// SPDX-License-Identifier: GPL-2.0
+// TCL 30 SE (6165S, "cruze_pro"), MT6762V/CB. Board file derived from xiaomi-dandelion.
+// Reserved ranges are the gaps in stock /proc/iomem. Framebuffer decoded from stock atag,videolfb.
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pinctrl/mediatek,mt6765-pinfunc.h>
+
+#include "mt6765.dtsi"
+#include "mt6357.dtsi"
+#include <dt-bindings/clock/mt6765-clk.h>
+
+/ {
+	chassis-type = "handset";
+	compatible = "tcl,cruze-pro", "mediatek,mt6762", "mediatek,mt6765";
+	model = "TCL 30 SE";
+
+	/* USB-C controller bus. Stock: wusb3801 at i2c3 0x60, INT = EINT3 (level low), VBUS for OTG from the charger.
+	 * The hardware i2c3 controller never finishes a transfer here (no interrupt, cause unknown), so the same
+	 * pins (GPIO50 SCL, GPIO51 SDA) are bit-banged. The traffic is a few bytes per plug event. */
+	i2c-typec {
+		compatible = "i2c-gpio";
+		scl-gpios = <&pio 50 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		sda-gpios = <&pio 51 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <5>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2c3_pins>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		typec@60 {
+			compatible = "willsemi,wusb3801";
+			reg = <0x60>;
+			interrupt-parent = <&pio>;
+			interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&typec_int_pins>;
+			vbus-supply = <&usb_otg_vbus>;
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C";
+				vbus-supply = <&usb_otg_vbus>;
+				power-role = "dual";
+				try-power-role = "sink";
+				data-role = "dual";
+				typec-power-opmode = "default";
+				pd-disable;
+			};
+
+			port {
+				typec_role_ep: endpoint {
+					remote-endpoint = <&usb2_role_ep>;
+				};
+			};
+		};
+	};
+
+	/* Volume up is on the SoC keypad column 0 pin, read as a plain GPIO. Volume down is the PMIC "home" key. */
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&volume_up_pins>;
+
+		key-volume-up {
+			gpios = <&pio 93 GPIO_ACTIVE_LOW>;
+			label = "volume_up";
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+		};
+	};
+
+	/* Manual CPU DVFS (module casper-mt6765-dvfs, loaded by hand; changes nothing until its debugfs files are written). */
+	casper-dvfs {
+		compatible = "casper,mt6765-dvfs";
+		reg = <0 0x10200000 0 0x1000>;	/* MCUCFG: per-cluster clock mux/divider */
+		clocks = <&apmixed CLK_APMIXED_ARMPLL_L>, <&apmixed CLK_APMIXED_ARMPLL>;
+		clock-names = "pll_l", "pll_ll";
+		vproc-supply = <&mt6357_vproc_reg>;
+		vsram-supply = <&mt6357_vsram_proc_reg>;
+	};
+
+	/* PowerVR Rogue GE8320 (out-of-tree pvrsrvkm; module NOT loaded automatically). Disabled until the driver is ready. */
+	gpu: gpu@13000000 {
+		compatible = "casper,mt6765-rgx";
+		reg = <0 0x13000000 0 0x80000>, <0 0x13ffe000 0 0x1000>;
+		interrupts = <GIC_SPI 259 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&topckgen CLK_TOP_MFG_SEL>, <&topckgen CLK_TOP_MFGPLL>, <&apmixed CLK_APMIXED_MFGPLL>;
+		clock-names = "mfg", "mfgpll_top", "mfgpll";
+		power-domains = <&mfg_core0>;
+		status = "okay";
+	};
+
+	aliases {
+		mmc0 = &mmc0;
+		serial0 = &uart0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		/* LK asserts this property exists (bootargs.c:106); the kernel uses its own forced cmdline. */
+		bootargs = "console=tty0";
+		stdout-path = "serial0:921600n8";
+
+		framebuffer0: framebuffer@7c0ce000 {
+			compatible = "simple-framebuffer";
+			memory-region = <&framebuffer_reserved>;
+			power-domains = <&spm MT6765_POWER_DOMAIN_DISP>;
+			/* The displayed layer's pitch register (OVL0 +0x64) is 2880: 720 pixels, no padding. */
+			width = <720>;
+			height = <1600>;
+			stride = <2880>;
+			format = "a8r8g8b8";
+			status = "okay";
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 1 0>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* CONNSYS EMI region, stock layout: 4 MB, dynamic and 16 MB aligned. */
+		consys_mem: consys-reserve-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			no-map;
+			size = <0 0x400000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		/* Wi-Fi firmware/EMI pool, stock layout: 3 MB. */
+		wifi_mem: wifi-reserve-memory {
+			compatible = "shared-dma-pool";
+			no-map;
+			size = <0 0x300000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		/* Same layout as the stock kernel, so Android can read a failed boot's log. */
+		ramoops: ramoops@47c90000 {
+			compatible = "ramoops";
+			reg = <0 0x47c90000 0 0xe0000>;
+			record-size = <0x1000>;
+			console-size = <0x40000>;
+			ftrace-size = <0x1000>;
+			pmsg-size = <0x10000>;
+		};
+
+		/* LK's framebuffer area holds three 736x1600 buffers. The panel is fed from the SECOND one
+		 * (measured: OVL0 layer-1 address 0x7c0ce000; a band written there shows up, the third does not). */
+		framebuffer_reserved: framebuffer@7c0ce000 {
+			reg = <0 0x7c0ce000 0 0x47e000>;
+			no-map;
+		};
+
+		fb_lower: memory@7bc50000 {
+			reg = <0 0x7bc50000 0 0x47e000>;
+			no-map;
+		};
+
+		fb_upper: memory@7c54c000 {
+			reg = <0 0x7c54c000 0 0x6b4000>;
+			no-map;
+		};
+
+		/* Firmware-owned pieces inside stock "System RAM". */
+		gz_memlog: memory@7f600000 {
+			reg = <0 0x7f600000 0 0x41000>;
+			no-map;
+		};
+
+		rsv_7f7c: memory@7f7c0000 {
+			reg = <0 0x7f7c0000 0 0x40000>;
+			no-map;
+		};
+
+		rsv_7200: memory@72000000 {
+			reg = <0 0x72000000 0 0x170000>;
+			no-map;
+		};
+
+		rsv_7800: memory@78000000 {
+			reg = <0 0x78000000 0 0x1600000>;
+			no-map;
+		};
+
+		ram_console: memory@47c80000 {
+			reg = <0x0 0x47c80000 0x0 0x10000>;
+			no-map;
+		};
+
+		atf_misc: memory@47d70000 {
+			reg = <0x0 0x47d70000 0x0 0x60000>;
+			no-map;
+		};
+
+		rsv_77ff: memory@77ff0000 {
+			reg = <0x0 0x77ff0000 0x0 0x10000>;
+			no-map;
+		};
+
+		tee_mem: memory@7cc00000 {
+			reg = <0x0 0x7cc00000 0x0 0x2a00000>;
+			no-map;
+		};
+
+		sspm: memory@7f700000 {
+			reg = <0x0 0x7f700000 0x0 0xc0000>;
+			no-map;
+		};
+
+		tee_sec: memory@7f800000 {
+			reg = <0x0 0x7f800000 0x0 0x800000>;
+			no-map;
+		};
+
+		/* Modem image loaded by LK and EMI-MPU protected; stock reserves it too (mblock md_mem_usage). */
+		md_mem: memory@8e000000 {
+			reg = <0x0 0x8e000000 0x0 0x10000000>;
+			no-map;
+		};
+
+		rsv_8d00: memory@8d000000 {
+			reg = <0x0 0x8d000000 0x0 0x300000>;
+			no-map;
+		};
+
+		rsv_9f3f: memory@9f3f0000 {
+			reg = <0x0 0x9f3f0000 0x0 0x510000>;
+			no-map;
+		};
+
+		rsv_9f90: memory@9f900000 {
+			reg = <0x0 0x9f900000 0x0 0x600000>;
+			no-map;
+		};
+
+		rsv_9fff: memory@9fff0000 {
+			reg = <0x0 0x9fff0000 0x0 0x10000>;
+			no-map;
+		};
+
+		rsv_be00: memory@be000000 {
+			reg = <0x0 0xbe000000 0x0 0x400000>;
+			no-map;
+		};
+
+		rsv_bf00: memory@bf000000 {
+			reg = <0x0 0xbf000000 0x0 0x300000>;
+			no-map;
+		};
+
+		rsv_bff3: memory@bff30000 {
+			reg = <0x0 0xbff30000 0x0 0xc0000>;
+			no-map;
+		};
+
+		dramc: memory@bffff000 {
+			reg = <0x0 0xbffff000 0x0 0x1000>;
+			no-map;
+		};
+
+		rsv_cfff: memory@cfffb000 {
+			reg = <0x0 0xcfffb000 0x0 0x5000>;
+			no-map;
+		};
+
+		rsv_top: memory@13ffff000 {
+			reg = <0x1 0x3ffff000 0x0 0x1000>;
+			no-map;
+		};
+	};
+
+	/* Stubs: LK's panel overlay (lcmparameter) must find these labels or its fixups fail. */
+	mtkfb: mtkfb {
+		status = "disabled";
+	};
+
+	lcm_module_list: lcm-module-list {
+		status = "disabled";
+	};
+
+	lcd_0: lcd-0 {
+		status = "disabled";
+	};
+
+	lcd_1: lcd-1 {
+		status = "disabled";
+	};
+
+	lcd_2: lcd-2 {
+		status = "disabled";
+	};
+
+	lcd_3: lcd-3 {
+		status = "disabled";
+	};
+
+	vusb33_fixed: ldo-vusb33 {
+		compatible = "regulator-fixed";
+		regulator-name = "vusb33-reg";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+	};
+};
+
+/* Dual role: the USB-C controller (wusb3801 on i2c3) picks host or device; device is the default. */
+&usb2 {
+	status = "okay";
+	dr_mode = "otg";
+	usb-role-switch;
+	maximum-speed = "high-speed";
+
+	port {
+		usb2_role_ep: endpoint {
+			remote-endpoint = <&typec_role_ep>;
+		};
+	};
+};
+
+&u2phy {
+	status = "okay";
+	phy-supply = <&vusb33_fixed>;
+};
+
+&u2port {
+	clocks = <&topckgen CLK_TOP_USB20_48M_EN>;
+};
+
+&mt6357_pmic {
+	interrupt-controller;
+	interrupt-parent = <&pio>;
+	interrupts = <144 IRQ_TYPE_LEVEL_HIGH>;
+	#interrupt-cells = <2>;
+
+	/* Without this the driver turns the PMIC's hold-Power-to-reset OFF and a hung system needs a flat battery. */
+	keys {
+		mediatek,long-press-mode = <1>;
+		power-off-time-sec = <0>;
+
+		key-home {
+			linux,keycodes = <KEY_VOLUMEDOWN>;
+		};
+	};
+};
+
+&mt6357_vdram_reg {
+	regulator-always-on;
+};
+
+/* HS200 only for now: HS400 needs board-specific delay tuning.
+ * Pins use function 1 (AUX1). The Redmi 9A layout (function 2) permutes DAT0/1/2/4/5/6: commands work, data times out. */
+&mmc0 {
+	status = "okay";
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	cap-mmc-hw-reset;
+	max-frequency = <200000000>;
+	non-removable;
+	no-sd;
+	no-sdio;
+	vmmc-supply = <&mt6357_vemc_reg>;
+	vqmmc-supply = <&mt6357_vio18_reg>;
+};
+
+&pwrap {
+	status = "okay";
+};
+
+/* Speaker amp: Awinic aw87xxx at 0x58 (stock dtbo fragment@34), fed from the MT6357 line-out. The LCD bias chip
+ * (0x3e) shares the bus. Pins are left as the bootloader muxed them. No amp node yet: identify the chip first. */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <400000>;
+};
+
+/* Charger lives here (stock: bq25890@6a or bq25601@6b, enable = GPIO165). Pins are left as the bootloader muxed them. */
+&i2c5 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	/* Silergy SY6970 (REG14 = 0x0c), bq25890 register map. Stock calls it bq25890@6a, INT = EINT12 "chr_stat",
+	 * enable = GPIO165 (left low by the bootloader). Keep the bootloader's limits for now (500 mA in, ~0.5 A charge,
+	 * 4.4 V): raise them at runtime through /sys/class/power_supply/bq25890-charger-0/ once the battery data is known. */
+	charger@6a {
+		compatible = "silergy,sy6970";
+		reg = <0x6a>;
+		interrupt-parent = <&pio>;
+		interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&charger_int_pins>;
+		linux,skip-reset;
+		linux,read-back-settings;
+
+		/* 5 V boost out of the USB port, switched by the USB-C controller when an OTG adapter is attached. */
+		usb_otg_vbus: usb-otg-vbus {
+			regulator-name = "usb_otg_vbus";
+		};
+	};
+};
+
+&pio {
+	/* Bit-banged (see i2c-typec). There are no external pull-ups: keep the pad ones the bootloader set (R1). */
+	i2c3_pins: i2c3-pins {
+		pins {
+			pinmux = <PINMUX_GPIO50__FUNC_GPIO50>,
+				 <PINMUX_GPIO51__FUNC_GPIO51>;
+			mediatek,pull-up-adv = <2>;
+		};
+	};
+
+	typec_int_pins: typec-int-pins {
+		pins {
+			pinmux = <PINMUX_GPIO3__FUNC_GPIO3>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	volume_up_pins: volume-up-pins {
+		pins {
+			pinmux = <PINMUX_GPIO93__FUNC_GPIO93>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	mmc0_pins_default: mmc0-pins-default {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO128__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO125__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO132__FUNC_AUX1_MSDC0_DAT3>,
+				 <PINMUX_GPIO126__FUNC_MSDC0_DAT4>,
+				 <PINMUX_GPIO129__FUNC_MSDC0_DAT5>,
+				 <PINMUX_GPIO127__FUNC_MSDC0_DAT6>,
+				 <PINMUX_GPIO130__FUNC_AUX1_MSDC0_DAT7>,
+				 <PINMUX_GPIO122__FUNC_AUX1_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO124__FUNC_AUX1_MSDC0_CLK>;
+			drive-strength = <3>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		pins_rst {
+			pinmux = <PINMUX_GPIO133__FUNC_AUX1_MSDC0_RSTB>;
+			drive-strength = <3>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-pins-uhs {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO128__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO125__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO132__FUNC_AUX1_MSDC0_DAT3>,
+				 <PINMUX_GPIO126__FUNC_MSDC0_DAT4>,
+				 <PINMUX_GPIO129__FUNC_MSDC0_DAT5>,
+				 <PINMUX_GPIO127__FUNC_MSDC0_DAT6>,
+				 <PINMUX_GPIO130__FUNC_AUX1_MSDC0_DAT7>,
+				 <PINMUX_GPIO122__FUNC_AUX1_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <4>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO124__FUNC_AUX1_MSDC0_CLK>;
+			drive-strength = <4>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		pins_ds {
+			pinmux = <PINMUX_GPIO131__FUNC_AUX1_MSDC0_DSL>;
+			drive-strength = <4>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		pins_rst {
+			pinmux = <PINMUX_GPIO133__FUNC_AUX1_MSDC0_RSTB>;
+			drive-strength = <3>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
+		};
+	};
+
+	charger_int_pins: charger-int-pins {
+		pins {
+			pinmux = <PINMUX_GPIO12__FUNC_GPIO12>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	spi0_pins: spi0-pins {
+		pins {
+			pinmux = <PINMUX_GPIO155__FUNC_SPI0_MI>,
+				 <PINMUX_GPIO156__FUNC_SPI0_CSB>,
+				 <PINMUX_GPIO157__FUNC_SPI0_MO>,
+				 <PINMUX_GPIO158__FUNC_SPI0_CLK>;
+			bias-disable;
+		};
+	};
+
+	touch_pins: touch-pins {
+		pins_int {
+			pinmux = <PINMUX_GPIO0__FUNC_GPIO0>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	uart0_pins: uart0-pins {
+		pins {
+			pinmux = <PINMUX_GPIO95__FUNC_URXD0>,
+					 <PINMUX_GPIO96__FUNC_UTXD0>;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+/* Touch half of the FT8756 display/touch chip. Stock: spi0 CS0, 4.8 MHz, INT = EINT0 falling, reset = GPIO11. */
+&spi0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_pins>;
+	mediatek,pad-select = <0>;
+
+	touchscreen@0 {
+		compatible = "focaltech,ft8756";
+		reg = <0>;
+		spi-max-frequency = <4800000>;
+		interrupt-parent = <&pio>;
+		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&pio 11 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_pins>;
+		touchscreen-size-x = <720>;
+		touchscreen-size-y = <1600>;
+		firmware-name = "focaltech/ft8756-tcl-cruze.bin";
+	};
+};
+
+&iommu {
+	status = "disabled";
+};
+
+/* Stock gives the touch node "vtouch-supply = vldo28" (2.8 V): keep it on (no effect seen either way). */
+&mt6357_vldo28_reg {
+	regulator-always-on;
+};
+
+/* ---- audio: MT6765 AFE (ported from MT8365) + MT6357 PMIC codec ----
+ * AFE window and interrupt taken from the stock FDT node mt_soc_dl1_pcm@11220000
+ * (interrupts = <0 0x99 0x08> => GIC_SPI 153, level low).
+ */
+/ {
+	afe: afe@11220000 {
+		compatible = "mediatek,mt6765-afe-pcm";
+		reg = <0 0x11220000 0 0x1000>;
+		interrupts = <GIC_SPI 153 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&audio CLK_AUDIO_AFE>,
+			 <&audio CLK_AUDIO_DAC>,
+			 <&audio CLK_AUDIO_DAC_PREDIS>,
+			 <&audio CLK_AUDIO_ADC>,
+			 <&audio CLK_AUDIO_22M>,
+			 <&audio CLK_AUDIO_APLL_TUNER>,
+			 <&audio CLK_AUDIO_TML>,
+			 <&audio CLK_AUDIO_I2S1_BCLK>,
+			 <&audio CLK_AUDIO_I2S2_BCLK>,
+			 <&audio CLK_AUDIO_I2S3_BCLK>,
+			 <&audio CLK_AUDIO_I2S4_BCLK>,
+			 <&infracfg CLK_IFR_AUDIO>, <&infracfg CLK_IFR_AUDIO_26M_BCLK>,
+			 <&topckgen CLK_TOP_AUDIO_SEL>, <&topckgen CLK_TOP_AUD_INTBUS_SEL>,
+			 <&topckgen CLK_TOP_AUD_1_SEL>, <&topckgen CLK_TOP_AUD_ENGEN1_SEL>,
+			 <&topckgen CLK_TOP_APLL1>, <&topckgen CLK_TOP_APLL1_D8>,
+			 <&topckgen CLK_TOP_APLL12_DIV0>, <&topckgen CLK_TOP_APLL12_DIV1>,
+			 <&topckgen CLK_TOP_APLL12_DIV2>, <&topckgen CLK_TOP_APLL12_DIV3>,
+			 <&clk26m>;
+		clock-names = "aud_afe", "aud_dac", "aud_dac_predis", "aud_adc",
+			      "aud_22m", "aud_apll_tuner", "aud_tml",
+			      "aud_i2s1_bclk", "aud_i2s2_bclk", "aud_i2s3_bclk",
+			      "aud_i2s4_bclk",
+			      "aud_infra", "aud_26m_bclk",
+			      "top_audio_sel", "top_audio_intbus_sel",
+			      "top_aud_1_sel", "top_aud_engen1_sel",
+			      "top_apll1", "top_apll1_d8",
+			      "apll12_div0", "apll12_div1", "apll12_div2", "apll12_div3",
+			      "clk26m";
+		status = "okay";
+	};
+};
+
+/* MT6357 PMIC codec, instantiated through the mt6397 MFD "mt6357-sound" cell.
+ * The codec probes with devm_regulator_get_enable("vaud28"), so the 2.8 V audio
+ * LDO must be wired up or the component never registers and no card is created.
+ */
+&mt6357_pmic {
+	mt6357_snd: sound-codec {
+		compatible = "mediatek,mt6357-sound";
+		vaud28-supply = <&mt6357_vaud28_reg>;
+	};
+};
+
+/ {
+	sound: sound {
+		compatible = "mediatek,mt6765-mt6357";
+		mediatek,platform = <&afe>;
+		mediatek,audio-codec = <&mt6357_snd>;
+		status = "okay";
+	};
+};
+
+/*
+ * CONNSYS (MT6631 Wi-Fi/BT/FM). Register windows, interrupts and the 4 MB EMI
+ * region are the stock DTB's values for this board.  Wi-Fi on MT6765 uses the
+ * AXI/PDMA HIF (wifi@18000000), not SDIO.
+ *
+ * The "conn" clock is a fixed-clock stand-in: mainline has no SCP_SYS_CONN
+ * clock provider (the vendor kernel exposes it through scpsys), so clk_get()
+ * succeeds and clk_prepare_enable() is a no-op.  TODO(port): bind this to the
+ * MT6765_POWER_DOMAIN_CONN power domain instead.
+ */
+/ {
+	conn_clk: conn-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+		clock-output-names = "conn";
+	};
+
+	consys: consys@18002000 {
+		compatible = "mediatek,mt6765-consys";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		reg = <0 0x18002000 0 0x1000>,   /* CONN_MCU_CONFIG */
+		      <0 0x10007000 0 0x0100>,   /* TOP_RGU */
+		      <0 0x10001000 0 0x1000>,   /* INFRACFG_AO */
+		      <0 0x10006000 0 0x1000>,   /* SPM */
+		      <0 0x18007000 0 0x1000>,   /* CONN_HIF_ON */
+		      <0 0x180b1000 0 0x1000>,   /* CONN_TOP_MISC_OFF */
+		      <0 0x180a3000 0 0x1000>,   /* CONN_MCU_CFG_ON */
+		      <0 0x180a5000 0 0x0800>,   /* CONN_MCU_CIRQ */
+		      <0 0x180c1000 0 0x1000>,   /* CONN_TOP_MISC_ON */
+		      <0 0x18004000 0 0x1000>,   /* CONN_HIF_PDMA */
+		      <0 0x0 0 0x0>,             /* index sync */
+		      <0 0x0 0 0x0>,
+		      <0 0x1020e000 0 0x1000>;   /* INFRACFG_REG */
+		interrupts = <GIC_SPI 267 IRQ_TYPE_LEVEL_LOW>,   /* BGF_EINT */
+			     <GIC_SPI 269 IRQ_TYPE_LEVEL_LOW>,   /* WDT_EINT */
+			     <GIC_SPI 270 IRQ_TYPE_EDGE_RISING>; /* conn2ap_sw_irq */
+		clocks = <&conn_clk>;
+		clock-names = "conn";
+		pmic = <&mt6357_pmic>;
+		memory-region = <&consys_mem>;
+	};
+
+	wifi: wifi@18000000 {
+		compatible = "mediatek,wifi";
+		reg = <0 0x18000000 0 0x100000>;
+		interrupts = <GIC_SPI 268 IRQ_TYPE_LEVEL_LOW>;
+		memory-region = <&wifi_mem>;
+	};
+};

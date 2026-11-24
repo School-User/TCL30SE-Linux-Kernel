@@ -24,6 +24,7 @@
 #define BQ25890_IRQ_PIN			"bq25890_irq"
 
 #define BQ25890_ID			3
+#define SY6970_ID			1
 #define BQ25895_ID			7
 #define BQ25896_ID			0
 
@@ -1297,6 +1298,11 @@ static int bq25890_get_chip_version(struct bq25890_device *bq)
 		bq->chip_version = BQ25890;
 		break;
 
+	/* Silergy SY6970 (TCL 30 SE): same register map as the BQ25890, part number field reads 1 */
+	case SY6970_ID:
+		bq->chip_version = BQ25890;
+		break;
+
 	/* BQ25892 and BQ25896 share same ID 0 */
 	case BQ25896_ID:
 		switch (rev) {
@@ -1630,6 +1636,7 @@ static const struct of_device_id bq25890_of_match[] __maybe_unused = {
 	{ .compatible = "ti,bq25892", },
 	{ .compatible = "ti,bq25895", },
 	{ .compatible = "ti,bq25896", },
+	{ .compatible = "silergy,sy6970", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, bq25890_of_match);

@@ -779,6 +779,16 @@ config TOUCHSCREEN_PENMOUNT
 	  To compile this driver as a module, choose M here: the
 	  module will be called penmount.
 
+config TOUCHSCREEN_FOCALTECH_FT8756
+	tristate "FocalTech FT8756 SPI touchscreen (host-downloaded firmware)"
+	depends on SPI_MASTER
+	select FW_LOADER
+	help
+	  Say Y here for the touch half of FocalTech FT8756 display/touch
+	  chips connected over SPI. The touch firmware is loaded into the
+	  chip at every start, so it must be available as
+	  focaltech/ft8756.bin (or the name given by firmware-name).
+
 config TOUCHSCREEN_EDT_FT5X06
 	tristate "EDT FocalTech FT5x06 I2C Touchscreen support"
 	depends on I2C

@@ -441,7 +441,7 @@
 						clocks = <&topckgen CLK_TOP_MFG_SEL>;
 						clock-names = "mfg";
 
-						power-domain@MT6765_POWER_DOMAIN_MFG_CORE0 {
+						mfg_core0: power-domain@MT6765_POWER_DOMAIN_MFG_CORE0 {
 							reg = <MT6765_POWER_DOMAIN_MFG_CORE0>;
 							#power-domain-cells = <0>;
 						};
@@ -905,7 +905,8 @@
 
 			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_LOW>;
 
-			clocks = <&infracfg CLK_TOP_MSDC50_0>,
+			/* "source" must be the topckgen mux: CLK_TOP_* indexes into infracfg hit an unrelated gate. */
+			clocks = <&topckgen CLK_TOP_MSDC50_0_SEL>,
 				 <&infracfg CLK_IFR_MSDC0>,
 				 <&infracfg CLK_IFR_MSDC0_SRC>;
 			clock-names = "source", "hclk", "source_cg";
@@ -920,7 +921,7 @@
 
 			interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_LOW>;
 
-			clocks = <&infracfg CLK_TOP_MSDC30_1>,
+			clocks = <&topckgen CLK_TOP_MSDC30_1_SEL>,
 				 <&infracfg CLK_IFR_MSDC1>,
 				 <&infracfg CLK_IFR_MSDC1_SRC>;
 			clock-names = "source", "hclk", "source_cg";

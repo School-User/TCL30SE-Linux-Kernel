@@ -101,9 +101,10 @@ static const struct mtk_pmic_regs mt6357_regs = {
 	.keys_regs[MTK_PMIC_HOMEKEY_INDEX] =
 		MTK_PMIC_KEYS_REGS(MT6357_TOPSTATUS,
 				   0x8, MT6357_PSC_TOP_INT_CON0, 0xa,
-				   MTK_PMIC_HOMEKEY_INDEX),
+				   MTK_PMIC_HOMEKEY_RST),
 	.pmic_rst_reg = MT6357_TOP_RST_MISC,
 	.rst_lprst_mask = MTK_PMIC_RST_DU_MASK,
+	.key_release_irq = true,
 };
 
 static const struct mtk_pmic_regs mt6358_regs = {
